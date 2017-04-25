@@ -22,6 +22,9 @@ public class PCB implements Comparable<PCB>{
 
     }
 
+    public String toString() {
+        return this.burst.toString();
+    }
 
     @Override
     public int compareTo(PCB other) {
