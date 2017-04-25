@@ -11,6 +11,8 @@ public class PCB implements Comparable<PCB>{
     public ArrayList<Integer> burst;
     public int priority;
     public int index;
+    public long startTime;
+    public long endTime;
 
     public PCB(int[] input){
         this.priority = input[0];

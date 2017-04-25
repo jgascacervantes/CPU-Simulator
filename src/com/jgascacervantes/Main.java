@@ -2,9 +2,11 @@ package com.jgascacervantes;
 
 
 import java.io.*;
+import java.util.ArrayList;
 import java.util.LinkedList;
 import java.util.PriorityQueue;
 import java.util.Queue;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.locks.Condition;
 import java.util.concurrent.locks.Lock;
 import java.util.concurrent.locks.ReentrantLock;
@@ -18,6 +20,32 @@ public class Main {
             System.out.println("wrong argcount");
             return;
         }
+
+        if(args[0].equals("-alg") ){
+            switch (args[1]) {
+                case "FIFO":    ALGO_FLAG = 0;
+                                break;
+                case "PR":     ALGO_FLAG = 1;
+                                break;
+                case "RR":      if(args[2].equals("-quantum")) {
+                                    ALGO_FLAG = 2;
+                                    break;
+                                } else{
+                                    System.out.println("USAGE: -alg [FIFO|SJF|PR|RR] [-quantum [integer(ms)]] -input [file name]");
+                                    return;
+                                }
+                case "SJF":     ALGO_FLAG = 3;
+                                break;
+
+                default:        System.out.println("USAGE: -alg [FIFO|SJF|PR|RR] [-quantum [integer(ms)]] -input [file name]");
+                                return;
+            }
+        } else {
+            System.out.println("USAGE: -alg [FIFO|SJF|PR|RR] [-quantum [integer(ms)]] -input [file name]");
+            return;
+        }
+
+
         String inputFilePath = args[args.length-1];
 
         try {
@@ -35,11 +63,15 @@ public class Main {
             readyQueue = new LinkedList<PCB>();
         }
         LinkedList<PCB> ioQueue = new LinkedList<PCB>();
+        ArrayList<PCB> finalQueue = new ArrayList<>();
+        // Ready Queue Lock and Condition variable
         final Lock readyLock = new ReentrantLock();
         final Condition notEmpty = readyLock.newCondition();
+        // IO queue Lock and Condition variable
         final Lock ioLock = new ReentrantLock();
         final Condition notEmptyIO = ioLock.newCondition();
 
+        Statistics statistics = new Statistics();
 
         //reads inputfile, creates a process object and puts it in queue
         Thread readerThread = new Thread(new Runnable() {
@@ -129,13 +161,24 @@ public class Main {
                         synchronized (readyQueue) {
                             proc = ((LinkedList<PCB>) readyQueue).removeFirst();
                         }
-                        Thread.sleep(proc.burst.get(proc.index));
 
+                        if(proc.index == 0){
+                            long initial = System.nanoTime();
+                            proc.startTime = initial;
+                        }
+                        long start = System.nanoTime();
+                        Thread.sleep(proc.burst.get(proc.index));
+                        long end = System.nanoTime();
+                        statistics.CPUtime += end-start;
                         proc.index++;
-                        if (proc.index <= proc.burst.size()) {
+                        if (proc.index < proc.burst.size()) {
                             synchronized (ioQueue) {
                                 ioQueue.add(proc);
                             }
+                        } else {
+                            statistics.throughput++;
+                            proc.endTime = System.nanoTime();
+                            finalQueue.add(proc);
                         }
                     } catch (InterruptedException e) {
                         e.printStackTrace();
@@ -153,23 +196,39 @@ public class Main {
         });
 
 
-
+        long startTime = System.nanoTime();
         readerThread.start();
         CPUThread.start();
         IOThread.start();
         try {
             readerThread.join();
-            System.out.println("READER FINISH");
             IOThread.join();
-            System.out.println("IO THREAD FINISH");
             CPUThread.join();
-            System.out.println("CPU THREAD FINISH");
-
-
         } catch (InterruptedException e) {
             e.printStackTrace();
         }
+        long endTime = System.nanoTime();
 
+        //calculations
+        long totalTime = endTime - startTime;
+        long cpuUsage = statistics.CPUtime * 100 / totalTime;
+        double tput = (double)statistics.throughput/((double)totalTime/ 1000000.0);
+        tput = Math.floor(tput * 100000)/ 100000;
+        for(PCB p : finalQueue){
+            Long waitTime = p.startTime - startTime;
+            Long turnaroundT = p.endTime - startTime;
+            waitTime = TimeUnit.NANOSECONDS.toMillis(waitTime);
+            turnaroundT = TimeUnit.NANOSECONDS.toMillis(turnaroundT);
+            statistics.waitTimes.add(waitTime);
+            statistics.turnaroundT.add(turnaroundT);
+        }
+        //FINAL OUTPUT
+        System.out.println("Input File Name : " + inputFilePath);
+        System.out.println("CPU Scheduling Algorithm: FIFO");
+        System.out.println("CPU Utilization : " + cpuUsage + "%");
+        System.out.println("Throughput : " + tput + " Processes per Millisecond");
+        System.out.println("Average Turnaround Time : " + statistics.calculateTurnaround() + "Milliseconds");
+        System.out.println("Average Waiting Time : " + statistics.calculateWait()+ "Milliseconds");
     }
 
 
