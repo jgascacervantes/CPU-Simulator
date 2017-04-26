@@ -2,25 +2,23 @@ package com.jgascacervantes;
 
 
 import java.io.*;
-import java.util.ArrayList;
-import java.util.LinkedList;
-import java.util.PriorityQueue;
-import java.util.Queue;
+import java.util.*;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.locks.Condition;
 import java.util.concurrent.locks.Lock;
 import java.util.concurrent.locks.ReentrantLock;
 
 public class Main {
-
+    
     public static void main(String[] args) {
         BufferedReader reader;
-        int ALGO_FLAG = 0; //0 = FIFO, 1 = PR, 2 = RR, 3 = SJF
-        if (args.length == 0) {
+
+        final int ALGO_FLAG; //0 = FIFO, 1 = PR, 2 = RR, 3 = SJF
+        if (args.length < 3) {
             System.out.println("wrong argcount");
             return;
         }
-
+        final int quantum = Integer.parseInt(args[3]);
         if(args[0].equals("-alg") ){
             switch (args[1]) {
                 case "FIFO":    ALGO_FLAG = 0;
@@ -113,11 +111,76 @@ public class Main {
             }
         });
 
+        //reads input file, changes priorities based on burst time, sends to readyQueue
+        Thread SJFreaderThread = new Thread(new Runnable() {
+            @Override
+            public void run() {
+                ArrayList<PCB> processes = new ArrayList<>();
+                while(true){
+                    String line = null;
+                    try {
+                        line = reader.readLine();
+                    } catch (IOException e) {
+                        e.printStackTrace();
+                    }
+
+                    String[] tokens = line.split("\\s+");
+                    if(tokens[0].equals("stop")) {
+                        break;
+                    } else if(tokens[0].equals("sleep")) {
+                        try {
+                            Thread.sleep(Integer.parseInt(tokens[1]));
+                        } catch (InterruptedException e) {
+                            e.printStackTrace();
+                        }
+                    } else if (tokens[0].equals("proc")){
+                        int[] bursts = new int[tokens.length-1];
+                        for(int i = 1; i < tokens.length; i++){
+                            bursts[i -1] = Integer.parseInt(tokens[i]);
+                        }
+                        PCB process = new PCB(bursts);
+                        processes.add(process);
+                    }
+                }
+                //sort by CPU burst time
+                Collections.sort(processes, new Comparator<PCB>() {
+                    @Override
+                    public int compare(PCB p1, PCB p22) {
+                        if (p1.cpuSum() > p22.cpuSum())
+                            return 1;
+                        if (p1.cpuSum() < p22.cpuSum())
+                            return -1;
+                        return 0;
+                    }
+                });
+                int i = 0;
+                //edit priority and add to readyQueue
+                for(PCB p : processes){
+                    p.priority = i;
+                    i++;
+                    readyLock.lock();
+                    try {
+                        readyQueue.add(p);
+                    } finally {
+                        readyLock.unlock();
+                    }
+                }
+                readyLock.lock();
+                try {
+                    notEmpty.signal();
+                } finally {
+                    readyLock.unlock();
+                }
+
+
+            }
+        });
+
         //simulates the io queue
         Thread IOThread = new Thread(new Runnable() {
             @Override
             public void run() {
-                while(!ioQueue.isEmpty() || readerThread.isAlive() ) {
+                while(!ioQueue.isEmpty() || readerThread.isAlive() || SJFreaderThread.isAlive() ) {
                     ioLock.lock();
                     try {
                         while (ioQueue.isEmpty())
@@ -127,7 +190,9 @@ public class Main {
                             proc = ioQueue.removeFirst();
                         }
                         Thread.sleep(proc.burst.get(proc.index));
-                        proc.index++;
+                        synchronized (proc) {
+                            proc.index++;
+                        }
                         synchronized (readyQueue) {
                             readyQueue.add(proc);
                         }
@@ -153,27 +218,53 @@ public class Main {
             @Override
             public void run() {
                 while(!readyQueue.isEmpty() || IOThread.isAlive()) {
+                    boolean io = false;
                     readyLock.lock();
                     try {
                         while (readyQueue.isEmpty())
                             notEmpty.await();
                         PCB proc;
                         synchronized (readyQueue) {
-                            proc = ((LinkedList<PCB>) readyQueue).removeFirst();
+                            if(ALGO_FLAG == 1){
+                                proc = ((PriorityQueue<PCB>) readyQueue).remove();
+                            } else
+                                proc = ((LinkedList<PCB>) readyQueue).removeFirst();
                         }
 
-                        if(proc.index == 0){
+                        if(proc.start){ // first time getting the cpu?
+                            proc.start = false;
                             long initial = System.nanoTime();
                             proc.startTime = initial;
                         }
-                        long start = System.nanoTime();
-                        Thread.sleep(proc.burst.get(proc.index));
-                        long end = System.nanoTime();
+                        long start;
+                        long end;
+                        if(ALGO_FLAG == 2){
+                            start = System.nanoTime();
+                            int i;
+                            for(i = proc.burst.get(proc.index); i > 0 && i > (proc.burst.get(proc.index) - quantum); i-- ) {
+                                Thread.sleep(1);
+                            }
+                            end = System.nanoTime();
+                            proc.burst.set(proc.index, i);
+                        } else {
+                            start = System.nanoTime();
+                            Thread.sleep(proc.burst.get(proc.index));
+                            end = System.nanoTime();
+                            proc.burst.set(proc.index, 0);
+                        }
                         statistics.CPUtime += end-start;
-                        proc.index++;
-                        if (proc.index < proc.burst.size()) {
+
+                        if(proc.burst.get(proc.index) > 0){
+                            synchronized (readyQueue){
+                                readyQueue.add(proc);
+                            }
+                        } else if (proc.index+1 < proc.burst.size()) {
                             synchronized (ioQueue) {
+                                synchronized (proc) {
+                                    proc.index++;
+                                }
                                 ioQueue.add(proc);
+                                io = true;
                             }
                         } else {
                             statistics.throughput++;
@@ -185,23 +276,39 @@ public class Main {
                     } finally {
                         readyLock.unlock();
                     }
-                    ioLock.lock();
-                    try {
-                        notEmptyIO.signal();
-                    } finally {
-                        ioLock.unlock();
+                    if(io) {
+                        ioLock.lock();
+                        try {
+                            notEmptyIO.signal();
+                        } finally {
+                            ioLock.unlock();
+                        }
+                    } else {
+                        readyLock.lock();
+                        try{
+                            notEmpty.signal();
+                        } finally {
+                            readyLock.unlock();
+                        }
                     }
                 }
             }
         });
-
-
+        if(ALGO_FLAG == 3){
+            SJFreaderThread.start();
+        }
         long startTime = System.nanoTime();
-        readerThread.start();
+        if(ALGO_FLAG != 3) {
+            readerThread.start();
+        }
         CPUThread.start();
         IOThread.start();
         try {
-            readerThread.join();
+            if(ALGO_FLAG == 3) {
+                SJFreaderThread.join();
+            } else {
+                readerThread.join();
+            }
             IOThread.join();
             CPUThread.join();
         } catch (InterruptedException e) {
@@ -224,11 +331,12 @@ public class Main {
         }
         //FINAL OUTPUT
         System.out.println("Input File Name : " + inputFilePath);
-        System.out.println("CPU Scheduling Algorithm: FIFO");
+        System.out.println("CPU Scheduling Algorithm: " + args[1]);
         System.out.println("CPU Utilization : " + cpuUsage + "%");
         System.out.println("Throughput : " + tput + " Processes per Millisecond");
-        System.out.println("Average Turnaround Time : " + statistics.calculateTurnaround() + "Milliseconds");
-        System.out.println("Average Waiting Time : " + statistics.calculateWait()+ "Milliseconds");
+        System.out.println("Average Turnaround Time : " + Math.floor(statistics.calculateTurnaround()*100)/100 + " Milliseconds");
+        System.out.println("Average Waiting Time : " + Math.floor(statistics.calculateWait()*100)/100 + " Milliseconds");
+
     }
 
 

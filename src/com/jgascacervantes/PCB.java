@@ -13,8 +13,10 @@ public class PCB implements Comparable<PCB>{
     public int index;
     public long startTime;
     public long endTime;
+    public boolean start;
 
     public PCB(int[] input){
+        this.start = true;
         this.priority = input[0];
         this.burst = new ArrayList<Integer>();
         this.index = 0;
@@ -24,6 +26,14 @@ public class PCB implements Comparable<PCB>{
 
     }
 
+    public int cpuSum(){
+        int sum = 0;
+        for(Integer i : burst){
+            if(i%2 ==0)
+                sum += i;
+        }
+        return sum;
+    }
     public String toString() {
         return this.burst.toString();
     }
