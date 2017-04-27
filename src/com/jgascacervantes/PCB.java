@@ -18,7 +18,7 @@ public class PCB implements Comparable<PCB>{
     public PCB(int[] input){
         this.start = true;
         this.priority = input[0];
-        this.burst = new ArrayList<Integer>();
+        this.burst = new ArrayList<>();
         this.index = 0;
         for(int i = 1; i < input.length; i++) {
             burst.add(input[i]);
